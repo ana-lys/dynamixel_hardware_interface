@@ -69,6 +69,8 @@ These parameters define how the interface communicates with the Dynamixel motors
 
 - **`use_fast_read`** (optional, default `true`): `false` reads with the normal Sync/Bulk Read (one status packet per device) instead of Fast Sync/Bulk Read (one combined packet). With fast read, a single corrupted section fails the whole read, and after the first successful fast read the driver never falls back, so a mid-run failure ends in a hardware deactivation after `error_timeout_ms`.
 
+- **`timing_log_period_s`** (optional, default `0` = off): every this many seconds, log one line with the bus read and write durations (median / p99 / max), the read-cycle period (median / p1 / p99 / max), and counts of reads, failed reads and slow reads (a read taking more than 80% of the cycle; each slow read also triggers a warning, at most once per second).
+
 #### **2. Hardware Configuration**
 
 These parameters define the hardware setup:

@@ -16,6 +16,7 @@
 
 #include "dynamixel_hardware_interface/dynamixel_hardware_interface.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -125,6 +126,16 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
       RCLCPP_WARN(
         logger_, "Invalid use_fast_read value '%s' (expected true/false), using true",
         value.c_str());
+    }
+  }
+
+  // Optional periodic bus-timing summary: one log line every timing_log_period_s seconds with
+  // read/write duration percentiles, cycle period and read failures. 0 (default) = off.
+  if (info_.hardware_parameters.find("timing_log_period_s") != info_.hardware_parameters.end()) {
+    try {
+      timing_log_period_s_ = std::max(0.0, stod(info_.hardware_parameters["timing_log_period_s"]));
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger_, "Failed to parse timing_log_period_s: %s, timing log off", e.what());
     }
   }
 
@@ -634,7 +645,28 @@ hardware_interface::return_type DynamixelHardware::read(
     RCLCPP_ERROR_STREAM(logger_, "Dynamixel Read Fail : REBOOTING");
     return hardware_interface::return_type::ERROR;
   } else if (dxl_status_ == DXL_OK || dxl_status_ == COMM_ERROR || dxl_status_ == HW_ERROR) {
+    const auto read_start = std::chrono::steady_clock::now();
     dxl_comm_err_ = CheckError(dxl_comm_->ReadMultiDxlData(period_ms));
+    if (timing_log_period_s_ > 0.0) {
+      const double read_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - read_start).count();
+      double cycle_ms = -1.0;
+      if (have_last_read_start_) {
+        cycle_ms = std::chrono::duration<double, std::milli>(read_start - last_read_start_).count();
+      }
+      last_read_start_ = read_start;
+      have_last_read_start_ = true;
+      RecordReadTiming(
+        read_ms, cycle_ms,
+        dxl_comm_err_ != DxlError::OK && dxl_comm_err_ != DxlError::DXL_HARDWARE_ERROR);
+      if (read_ms > 0.8 * period_ms && period_ms > 0.0) {
+        ++timing_slow_reads_;
+        RCLCPP_WARN_THROTTLE(
+          logger_, clock_, 1000, "Slow bus read: %.2f ms of a %.1f ms cycle (%s)", read_ms,
+          period_ms, dxl_comm_->GetUseFastReadProtocol() ? "fast read" : "normal read");
+      }
+      MaybeLogTiming();
+    }
     if (dxl_comm_err_ != DxlError::OK && dxl_comm_err_ != DxlError::DXL_HARDWARE_ERROR) {
       if (!is_read_in_error_) {
         is_read_in_error_ = true;
@@ -694,7 +726,13 @@ hardware_interface::return_type DynamixelHardware::write(
 
     CalcJointToTransmission();
 
+    const auto write_start = std::chrono::steady_clock::now();
     dxl_comm_->WriteMultiDxlData();
+    if (timing_log_period_s_ > 0.0) {
+      write_hist_.add(
+        std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - write_start).count());
+    }
 
     is_write_in_error_ = false;
     write_error_duration_ = rclcpp::Duration(0, 0);
@@ -1714,6 +1752,70 @@ std::string DynamixelHardware::getAllErrorSummaries() const
 
   all_summaries << "=====================================\n";
   return all_summaries.str();
+}
+
+void DynamixelHardware::TimingHistogram::add(double ms)
+{
+  const int bin = std::clamp(static_cast<int>(ms / kBinMs), 0, kBins - 1);
+  ++bins[bin];
+  ++n;
+  sum_ms += ms;
+  max_ms = std::max(max_ms, ms);
+}
+
+double DynamixelHardware::TimingHistogram::percentile(double p) const
+{
+  if (n == 0) {return 0.0;}
+  const uint32_t target = static_cast<uint32_t>(std::ceil(p * n));
+  uint32_t acc = 0;
+  for (int i = 0; i < kBins; ++i) {
+    acc += bins[i];
+    if (acc >= target) {return (i + 1) * kBinMs;}   // upper edge of the bin
+  }
+  return max_ms;
+}
+
+void DynamixelHardware::TimingHistogram::reset()
+{
+  bins.fill(0);
+  n = 0;
+  sum_ms = 0.0;
+  max_ms = 0.0;
+}
+
+void DynamixelHardware::RecordReadTiming(double read_ms, double cycle_period_ms, bool failed)
+{
+  read_hist_.add(read_ms);
+  if (cycle_period_ms >= 0.0) {period_hist_.add(cycle_period_ms);}
+  if (failed) {++timing_read_fails_;}
+}
+
+void DynamixelHardware::MaybeLogTiming()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (timing_window_start_ == std::chrono::steady_clock::time_point{}) {
+    timing_window_start_ = now;
+    return;
+  }
+  const double elapsed_s = std::chrono::duration<double>(now - timing_window_start_).count();
+  if (elapsed_s < timing_log_period_s_) {return;}
+
+  RCLCPP_INFO(
+    logger_,
+    "[bus timing %.0fs, %s] read ms: med %.2f p99 %.2f max %.2f | write ms: med %.2f p99 %.2f "
+    "max %.2f | cycle ms: med %.2f p1 %.2f p99 %.2f max %.2f | reads %u, failed %u, slow %u",
+    elapsed_s, dxl_comm_->GetUseFastReadProtocol() ? "fast read" : "normal read",
+    read_hist_.percentile(0.5), read_hist_.percentile(0.99), read_hist_.max_ms,
+    write_hist_.percentile(0.5), write_hist_.percentile(0.99), write_hist_.max_ms,
+    period_hist_.percentile(0.5), period_hist_.percentile(0.01), period_hist_.percentile(0.99),
+    period_hist_.max_ms, read_hist_.n, timing_read_fails_, timing_slow_reads_);
+
+  read_hist_.reset();
+  write_hist_.reset();
+  period_hist_.reset();
+  timing_read_fails_ = 0;
+  timing_slow_reads_ = 0;
+  timing_window_start_ = now;
 }
 
 }  // namespace dynamixel_hardware_interface

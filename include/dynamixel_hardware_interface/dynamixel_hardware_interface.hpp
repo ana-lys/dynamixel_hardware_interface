@@ -17,6 +17,9 @@
 #ifndef DYNAMIXEL_HARDWARE_INTERFACE__DYNAMIXEL_HARDWARE_INTERFACE_HPP_
 #define DYNAMIXEL_HARDWARE_INTERFACE__DYNAMIXEL_HARDWARE_INTERFACE_HPP_
 
+#include <array>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -190,6 +193,33 @@ private:
   rclcpp::Duration write_error_duration_{0, 0};
   bool is_read_in_error_{false};
   bool is_write_in_error_{false};
+
+  ///// bus timing summary (optional, 'timing_log_period_s' > 0)
+  // Fixed-size histogram: no allocation in the control loop, percentiles from bin counts.
+  struct TimingHistogram
+  {
+    static constexpr int kBins = 400;            // 0.05 ms bins -> 0..20 ms, last bin = overflow
+    static constexpr double kBinMs = 0.05;
+    std::array<uint32_t, kBins> bins{};
+    uint32_t n{0};
+    double sum_ms{0.0};
+    double max_ms{0.0};
+    void add(double ms);
+    double percentile(double p) const;
+    double mean() const {return n ? sum_ms / n : 0.0;}
+    void reset();
+  };
+  double timing_log_period_s_{0.0};
+  TimingHistogram read_hist_;
+  TimingHistogram write_hist_;
+  TimingHistogram period_hist_;
+  uint32_t timing_read_fails_{0};
+  uint32_t timing_slow_reads_{0};
+  std::chrono::steady_clock::time_point timing_window_start_{};
+  std::chrono::steady_clock::time_point last_read_start_{};
+  bool have_last_read_start_{false};
+  void RecordReadTiming(double read_ms, double cycle_period_ms, bool failed);
+  void MaybeLogTiming();
 
   bool use_revolute_to_prismatic_{false};
   std::string conversion_dxl_name_{""};
