@@ -67,6 +67,8 @@ These parameters define how the interface communicates with the Dynamixel motors
 
 - **`error_timeout_ms`**: Timeout for communication errors (in milliseconds).
 
+- **`use_fast_read`** (optional, default `true`): `false` reads with the normal Sync/Bulk Read (one status packet per device) instead of Fast Sync/Bulk Read (one combined packet). With fast read, a single corrupted section fails the whole read, and after the first successful fast read the driver never falls back, so a mid-run failure ends in a hardware deactivation after `error_timeout_ms`.
+
 #### **2. Hardware Configuration**
 
 These parameters define the hardware setup:

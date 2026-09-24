@@ -246,6 +246,12 @@ public:
   DxlError Reboot(uint8_t id);
   void RWDataReset();
 
+  // Fast Sync/Bulk Read on/off. Must be called before SetMultiDxlRead().
+  // false = always use the normal Sync/Bulk Read (one status packet per device),
+  // the same path the driver already falls back to when fast read fails at startup.
+  void SetUseFastReadProtocol(bool use) {use_fast_read_protocol_ = use;}
+  bool GetUseFastReadProtocol() const {return use_fast_read_protocol_;}
+
   // DXL Read Setting
   DxlError SetDxlReadItems(
     uint8_t comm_id, uint8_t id, std::vector<std::string> item_names,

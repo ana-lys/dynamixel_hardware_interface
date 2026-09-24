@@ -112,6 +112,22 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     RCLCPP_INFO(logger_, "error_timeout_ms parameter not found, using default value of 500ms");
   }
 
+  // Fast Sync/Bulk Read (one combined status packet built by all devices) is the default.
+  // Once it has succeeded once it is used permanently, so a mid-run failure never falls back
+  // and the hardware is deactivated after error_timeout_ms. 'use_fast_read' = false uses the
+  // normal Sync/Bulk Read (one status packet per device) from the start instead.
+  bool use_fast_read = true;
+  if (info_.hardware_parameters.find("use_fast_read") != info_.hardware_parameters.end()) {
+    const std::string value = info_.hardware_parameters.at("use_fast_read");
+    if (value == "false" || value == "False" || value == "0") {
+      use_fast_read = false;
+    } else if (value != "true" && value != "True" && value != "1") {
+      RCLCPP_WARN(
+        logger_, "Invalid use_fast_read value '%s' (expected true/false), using true",
+        value.c_str());
+    }
+  }
+
   // Add new parameter for torque initialization
   bool disable_torque_at_init = false;
   if (info_.hardware_parameters.find("disable_torque_at_init") != info_.hardware_parameters.end()) {
@@ -143,6 +159,10 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     new Dynamixel(
       (ament_index_cpp::get_package_share_directory("dynamixel_hardware_interface") +
       dxl_model_folder).c_str()));
+  dxl_comm_->SetUseFastReadProtocol(use_fast_read);
+  RCLCPP_INFO(
+    logger_, "use_fast_read: %s",
+    use_fast_read ? "true (Fast Sync/Bulk Read)" : "false (normal Sync/Bulk Read)");
 
   RCLCPP_INFO_STREAM(logger_, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
   RCLCPP_INFO_STREAM(logger_, "$$$$$ Init Dxl Comm Port");
