@@ -139,6 +139,16 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     }
   }
 
+  // On a failed group read, read every device individually and log who answers
+  // (and, if nobody does, reopen the port once and ask again). Default on; only runs
+  // while reads are failing.
+  if (info_.hardware_parameters.find("roll_call_on_read_fail") !=
+    info_.hardware_parameters.end())
+  {
+    const std::string value = info_.hardware_parameters.at("roll_call_on_read_fail");
+    roll_call_on_read_fail_ = !(value == "false" || value == "False" || value == "0");
+  }
+
   // Add new parameter for torque initialization
   bool disable_torque_at_init = false;
   if (info_.hardware_parameters.find("disable_torque_at_init") != info_.hardware_parameters.end()) {
@@ -671,8 +681,17 @@ hardware_interface::return_type DynamixelHardware::read(
       if (!is_read_in_error_) {
         is_read_in_error_ = true;
         read_error_duration_ = rclcpp::Duration(0, 0);
+        roll_calls_in_error_ = 0;
+        port_reopened_in_error_ = false;
       }
       read_error_duration_ = read_error_duration_ + period;
+
+      if (roll_call_on_read_fail_ &&
+        (roll_calls_in_error_ == 0 ||
+        std::chrono::steady_clock::now() - last_roll_call_ >= std::chrono::milliseconds(100)))
+      {
+        DoRollCall(read_error_duration_.seconds() * 1000);
+      }
 
       RCLCPP_ERROR_STREAM(
         logger_,
@@ -683,6 +702,12 @@ hardware_interface::return_type DynamixelHardware::read(
         return hardware_interface::return_type::ERROR;
       }
       return hardware_interface::return_type::OK;
+    }
+    if (is_read_in_error_) {
+      RCLCPP_WARN(
+        logger_, "Bus reads recovered after %.0f ms of failures (%d roll call(s), port %s)",
+        read_error_duration_.seconds() * 1000, roll_calls_in_error_,
+        port_reopened_in_error_ ? "reopened" : "not reopened");
     }
     is_read_in_error_ = false;
     read_error_duration_ = rclcpp::Duration(0, 0);
@@ -1752,6 +1777,45 @@ std::string DynamixelHardware::getAllErrorSummaries() const
 
   all_summaries << "=====================================\n";
   return all_summaries.str();
+}
+
+namespace
+{
+std::string FormatRollCall(const Dynamixel::RollCallResult & r)
+{
+  std::string answered;
+  for (auto id : r.answered) {
+    answered += (answered.empty() ? "" : ",") + std::to_string(id);
+  }
+  std::string silent;
+  for (const auto & s : r.silent) {
+    silent += (silent.empty() ? "" : ", ") + std::to_string(s.first) + "(" +
+      std::to_string(s.second) + ")";
+  }
+  return "answered " + std::to_string(r.answered.size()) + " [" + answered + "] | SILENT " +
+         std::to_string(r.silent.size()) + " [" + silent + "] (" +
+         std::to_string(static_cast<int>(r.elapsed_ms)) + " ms)";
+}
+}  // namespace
+
+void DynamixelHardware::DoRollCall(double failed_for_ms)
+{
+  last_roll_call_ = std::chrono::steady_clock::now();
+  ++roll_calls_in_error_;
+  auto r = dxl_comm_->RollCall(3.0);
+  RCLCPP_ERROR(
+    logger_, "ROLL CALL #%d after %.0f ms of failed reads: %s", roll_calls_in_error_,
+    failed_for_ms, FormatRollCall(r).c_str());
+  // Nobody answering is either a dead bus upstream of every device or a dead port session on
+  // this side. Reopen the port once and ask again: answers now = host side, still silent = bus.
+  if (r.answered.empty() && !port_reopened_in_error_) {
+    port_reopened_in_error_ = true;
+    const bool ok = dxl_comm_->ReopenPort();
+    auto r2 = dxl_comm_->RollCall(3.0);
+    RCLCPP_ERROR(
+      logger_, "ROLL CALL after port reopen (%s): %s", ok ? "reopened" : "REOPEN FAILED",
+      FormatRollCall(r2).c_str());
+  }
 }
 
 void DynamixelHardware::TimingHistogram::add(double ms)

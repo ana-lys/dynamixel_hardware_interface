@@ -221,6 +221,13 @@ private:
   void RecordReadTiming(double read_ms, double cycle_period_ms, bool failed);
   void MaybeLogTiming();
 
+  ///// roll call on read failure ('roll_call_on_read_fail', default true)
+  bool roll_call_on_read_fail_{true};
+  int roll_calls_in_error_{0};
+  bool port_reopened_in_error_{false};
+  std::chrono::steady_clock::time_point last_roll_call_{};
+  void DoRollCall(double failed_for_ms);
+
   bool use_revolute_to_prismatic_{false};
   std::string conversion_dxl_name_{""};
   std::string conversion_joint_name_{""};

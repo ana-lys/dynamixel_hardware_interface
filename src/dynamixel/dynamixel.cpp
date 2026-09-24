@@ -200,6 +200,46 @@ void Dynamixel::OverrideUnitInfo(
   dxl_info_.dxl_info_by_comm_[comm_id][id].offset_map[data_name] = offset_value;
 }
 
+Dynamixel::RollCallResult Dynamixel::RollCall(double per_device_timeout_ms)
+{
+  RollCallResult result;
+  if (port_handler_ == nullptr || packet_handler_ == nullptr) {
+    return result;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  for (const auto & item : read_data_list_) {
+    const uint8_t id = item.comm_id;
+    uint16_t addr = 7;      // ID register on the Protocol 2.0 models in use
+    uint8_t size = 1;
+    dxl_info_.GetDxlControlItem(id, id, "ID", addr, size);
+    uint8_t data[4] = {0};
+    uint8_t error = 0;
+    int rc = packet_handler_->readTx(port_handler_, id, addr, 1);
+    if (rc == COMM_SUCCESS) {
+      // readTx() arms a latency-timer based timeout (~34 ms); a silent device must not cost that.
+      port_handler_->setPacketTimeout(per_device_timeout_ms);
+      rc = packet_handler_->readRx(port_handler_, id, 1, data, &error);
+    }
+    if (rc == COMM_SUCCESS) {
+      result.answered.push_back(id);
+    } else {
+      result.silent.emplace_back(id, rc);
+    }
+  }
+  result.elapsed_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - start).count();
+  return result;
+}
+
+bool Dynamixel::ReopenPort()
+{
+  if (port_handler_ == nullptr) {
+    return false;
+  }
+  port_handler_->closePort();
+  return port_handler_->openPort();   // PortHandlerLinux::openPort() re-applies the stored baudrate
+}
+
 DxlError Dynamixel::SetupPort(const std::string & port_name, const std::string & baudrate)
 {
   port_handler_ = dynamixel::PortHandler::getPortHandler(port_name.c_str());

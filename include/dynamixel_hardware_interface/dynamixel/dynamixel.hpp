@@ -252,6 +252,19 @@ public:
   void SetUseFastReadProtocol(bool use) {use_fast_read_protocol_ = use;}
   bool GetUseFastReadProtocol() const {return use_fast_read_protocol_;}
 
+  // Diagnostics for a failed group read: read 1 byte (the ID register) from every device in
+  // the read list, one device at a time, with a short per-device timeout. Shows which devices
+  // answer at that moment -- a group (fast) bulk/sync read cannot tell which device broke it.
+  struct RollCallResult
+  {
+    std::vector<uint8_t> answered;
+    std::vector<std::pair<uint8_t, int>> silent;   // (id, DynamixelSDK comm result)
+    double elapsed_ms{0.0};
+  };
+  RollCallResult RollCall(double per_device_timeout_ms);
+  // Close and reopen the serial port on the same PortHandler (group handlers keep their pointer).
+  bool ReopenPort();
+
   // DXL Read Setting
   DxlError SetDxlReadItems(
     uint8_t comm_id, uint8_t id, std::vector<std::string> item_names,
